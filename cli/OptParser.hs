@@ -1,12 +1,11 @@
 module OptParser where
 
 import Options.Applicative as Opts
-import qualified Data.Text as T
-import Data.Text (Text)
+-- import qualified Data.Text as T
+-- import Data.Text (Text)
 import qualified Text.RE.TDFA.Text as RE
 import System.FilePath (FilePath)
-import qualified System.FilePath as FP
-import qualified Control.Monad.Catch as E
+-- import qualified System.FilePath as FP
 import qualified Data.Functor.Identity as I
 import Options.Applicative.Types (ArgPolicy(..))
 
@@ -75,7 +74,8 @@ argParser = Args
     pgPortParser = option auto $
       long "pg-port" <>
       help "Postgres port to use while extracting schema information" <>
-      value 5432
+      value 5432 <>
+      showDefault
 
     pgDatabaseParser = strOption $
       long "pg-database" <>

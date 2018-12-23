@@ -4,14 +4,8 @@ module Steroids.EnumGenerator where
 import Steroids.Types
 import Data.Text as T
 import Data.List as DL
-import Data.Map.Strict as Map
-import Data.Set as Set
 import Text.InterpolatedString.Perl6 (qc)
 import GHC.Stack
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Lens as L
-import Cases
 
 data EnumInfo = EnumInfo
   { enumType :: !QualifiedType
@@ -31,7 +25,7 @@ generateEnumData EnumInfo{..} = CodeSnippet
   , newIdentifiers = [tname <> "(..)"]
   }
   where
-    (QualifiedType mname tname) = enumType
+    (QualifiedType _ tname) = enumType
     constrString = T.intercalate " | " $ DL.map fst enumValues
     derivingString = case enumDeriving of
       [] -> "" :: Text

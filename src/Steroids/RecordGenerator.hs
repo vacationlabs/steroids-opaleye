@@ -5,13 +5,8 @@ import Steroids.Types
 import Data.Text as T
 import Data.List as DL
 import Data.Map.Strict as Map
-import Data.Set as Set
 import Text.InterpolatedString.Perl6 (qc)
 import GHC.Stack
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Lens as L
-import Cases
 
 {-
 generateRecords :: (HasCallStack) => Map.Map TableName TableInfo -> ScriptM [ModuleName]
@@ -54,34 +49,6 @@ import Models.{rname}.Types
 --                    | FieldOptionalDuringCreation
 --                    deriving (Eq, Show)
 
-data FieldInfo = FieldInfo
-  { fieldName :: !Text
-  , fieldPGName :: !Text
-  , fieldArrayDim :: !Int
-  , fieldHaskellReadType :: !(ColIsNullable, QualifiedType)
-  , fieldHaskellWriteType :: !(ColIsNullable, QualifiedType)
-  , fieldPGReadType :: !(ColIsNullable, QualifiedType)
-  , fieldPGWriteType :: !(ColIsNullable, ColHasDefault, QualifiedType)
-  } deriving (Show)
--- $(makeLensesWith camelCaseFields ''FieldInfo)
-
-data RecordInfo = RecordInfo
-  { recordPolymorphicTypeName :: !Text
-  , recordConstructurName :: !Text
-  , recordFieldPrefix :: !Text
-  , recordFields :: ![FieldInfo]
-  , recordHaskellReadTypeName :: !Text
-  , recordHaskellWriteTypeName :: !Text
-  , recordPGReadTypeName :: !Text
-  , recordPGWriteTypeName :: !Text
-  , recordDeriving :: ![QualifiedType]
-  , recordOpaleyeTableName :: !Text
-  , recordPGTableName :: !Text
-  , recordStrictFields :: Bool
-  } deriving (Show)
--- $(makeLenses ''RecordInfo)
-
-
 
 typeVariableName :: Text -> FieldInfo -> Text
 typeVariableName suffix FieldInfo{..} = T.append fieldName suffix
@@ -101,7 +68,7 @@ generateRecord  rinfo@RecordInfo{..} = CodeSnippet
     derivingTemplate = T.intercalate ", " $ DL.map qualifiedName recordDeriving
     fieldTemplate =
       T.intercalate ", " $
-      (flip DL.map) recordFields $ \finfo@FieldInfo{fieldName=fn} ->
+      (flip DL.map) recordFields $ \finfo ->
                                      T.concat [ prefixedFieldName rinfo finfo
                                               , if recordStrictFields then " :: " else ":: !"
                                               , typeVariableName "" finfo]
@@ -204,7 +171,7 @@ generateOpaleyeTable rinfo@RecordInfo{..} = CodeSnippet
     requiredTy = QualifiedType "Opaleye" "required"
     tableLMaps = DL.map fieldLMap recordFields
     fieldLMap finfo@FieldInfo{..} =
-      let (ColIsNullable isNullable, ColHasDefault hasDefault, _) = fieldPGWriteType
+      let (ColIsNullable _, ColHasDefault hasDefault, _) = fieldPGWriteType
       in T.intercalate " " [ qualifiedName lmapTy
                            , prefixedFieldName rinfo finfo
                            , if hasDefault
@@ -268,7 +235,7 @@ module {moduleNameWithExportList} where
           let QualifiedType{..} = importQualifiedType
           in Map.insertWith
              (
-               \constrMap1 constrMap2 ->
+               \_ constrMap2 ->
                  Map.insertWith (||) qTypeName importConstructors constrMap2
              )
              qModuleName
@@ -289,7 +256,7 @@ module {moduleNameWithExportList} where
       (Map.toList constrMap)
 
     uniqueImportList :: [Text] =
-      DL.map (\(mname, constrMap) -> ([qc|import {mname} ({T.intercalate ", " $ importItemWithConstructors constrMap})|])) $
+      DL.map (\(_, constrMap) -> ([qc|import {mname} ({T.intercalate ", " $ importItemWithConstructors constrMap})|])) $
       Map.toList importMap
 
 {-

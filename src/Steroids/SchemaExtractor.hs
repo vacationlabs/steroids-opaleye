@@ -4,9 +4,10 @@ import           Text.InterpolatedString.Perl6 (qc)
 import Data.String.Conv
 import Safe
 import Data.Maybe
-import Database.PostgreSQL.Simple.FromField
-import Database.PostgreSQL.Simple.FromRow (field, fieldWith, RowParser)
+import Database.PostgreSQL.Simple.FromRow (field, RowParser)
 import qualified Steroids.Types as Types
+import Steroids.Types (TableInfo(..), ColInfo(..))
+import Steroids.Types (MonadConstraint)
 import Database.PostgreSQL.Simple
 import Control.Monad.Logger
 import GHC.Stack
@@ -15,35 +16,13 @@ import Control.Monad.IO.Class
 import Data.List as DL
 import Database.PostgreSQL.Simple.Types(PGArray(..))
 import Data.Map.Strict as Map
-import Data.Set as Set
-import Data.Text as T
 import Control.Lens
-
-type MonadConstraint m = (MonadLogger m, HasCallStack, MonadIO m)
-
-data TableInfo = TableInfo
-  { tableName :: Types.TableName
-  , pkInfo :: Maybe Types.ColumnName
-  , fkConstraints :: [(Types.ColumnName, Types.TableName, Types.ColumnName)]
-  , columnMap :: Map.Map Types.ColumnName ColInfo
-  } deriving (Show)
-
-data ColInfo = ColInfo
-  { colName :: Types.ColumnName
-  , colRawPGType :: Types.ColType
-  , colDefault :: Types.ColHasDefault
-  , colNullable :: Types.ColIsNullable
-  , colArray :: Types.ColIsArray
-  , colPosition :: Types.ColPosition
-  , colArrayDim :: Int
-  } deriving (Show)
-
 
 extractSchema
   :: MonadConstraint m
   => Connection
   -> Types.GlobalConfig
-  -> m (Map.Map Types.TableName TableInfo)
+  -> m (Map.Map Types.TableName Types.TableInfo)
 extractSchema conn cfg = do
   qresults <- fetchAllColumns conn cfg
   fkConstraints <- fetchAllFkConstraints conn cfg
@@ -139,7 +118,7 @@ WHERE
 
 
 
-generateTableInfoMap :: [Types.QResult] -> [Types.FKResult] -> Map.Map Types.TableName TableInfo
+generateTableInfoMap :: [Types.QResult] -> [Types.FKResult] -> Map.Map Types.TableName Types.TableInfo
 generateTableInfoMap qresults fks =
   let (qrIMap :: Map.Map Types.TableName [Types.QResult]) = Types.createMapBy (view _2) qresults
       (fkIMap :: Map.Map Types.TableName [Types.FKResult]) = Types.createMapBy (view (_2._1)) fks
@@ -194,7 +173,7 @@ generateTableInfoMap qresults fks =
 -- Utils
 --
 
-getColInfoByColName :: Map.Map Types.TableName TableInfo -> (Types.TableName, Types.ColumnName) -> ColInfo
+getColInfoByColName :: Map.Map Types.TableName Types.TableInfo -> (Types.TableName, Types.ColumnName) -> Types.ColInfo
 getColInfoByColName tableMap args@(tname, cname) =
   let tinfo = fromJustNote ([qc|Couldn't find {tname} while looking up {args}|]) (Map.lookup tname tableMap)
   in fromJustNote ([qc|Couldn't find {cname} while looking up {args}|]) $ DL.find (\cinfo -> (colName cinfo) == cname) (columnMap tinfo)
