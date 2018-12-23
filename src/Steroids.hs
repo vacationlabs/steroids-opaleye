@@ -64,7 +64,7 @@ steroids-opaleye
   --pg-db
   --pg-password
   --output-dir
-  --type-mapping=jsonb,Data.AesonValue
+  --type-mapping=jsonb,Data.Aeson.Value
 @
 
 == Generating lenses

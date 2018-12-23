@@ -30,8 +30,6 @@ import Text.InterpolatedString.Perl6 (qc)
 
 data ScriptEnv = ScriptEnv
   { fastLogger :: FLogger.FastLogger
-  , recordSettings :: (Types.TableInfo -> Types.RecordInfo)
-  , moduleSettings :: (Types.RecordInfo -> Types.ModuleName)
   , tempDir :: FilePath
   , outputDir :: FilePath
   }
@@ -52,8 +50,6 @@ main = do
       let cfg = getGlobalConfig args
           env = ScriptEnv
                 { fastLogger = flogger
-                , recordSettings = Control.defaultRecordSettings Control.defaultFieldSettings
-                , moduleSettings = Control.defaultModuleSettings
                 , tempDir = tdir
                 , outputDir = Args.outputDir args
                 }
@@ -62,13 +58,11 @@ main = do
 script :: PGS.Connection -> GlobalConfig -> ScriptM ()
 script conn cfg = do
   -- TODO: any way to control record-setting via args OR config-file?
-  rsettings <- recordSettings <$> ask
-  msetings <- moduleSettings <$> ask
   tdir <- tempDir <$> ask
   outdir <- outputDir <$> ask
 
   -- Map.Map Types.TableName (Types.TableInfo, Types.RecordInfo, Types.ModuleName)
-  tableMap <- (Control.applySettings rsettings msetings) <$>
+  tableMap <- (Control.applySettings cfg) <$>
               (Schema.extractSchema conn cfg)
 
   let tableInfos = Map.elems tableMap
@@ -91,11 +85,17 @@ getConnection args = PGS.connect $ PGS.ConnectInfo
   }
 
 getGlobalConfig :: Args -> Types.GlobalConfig
-getGlobalConfig args = GlobalConfig
-  { cfgSchemas = Args.includeSchema args
-  , cfgIncludeTables = Args.includeTable args
-  , cfgExcludeTables = Args.excludeTable args
-  }
+getGlobalConfig args =
+  let cfg = GlobalConfig
+            { cfgSchemas = Args.includeSchema args
+            , cfgIncludeTables = Args.includeTable args
+            , cfgExcludeTables = Args.excludeTable args
+            , cfgRecordSettings = Control.defaultRecordSettings cfg
+            , cfgModuleSetings = Control.defaultModuleSettings cfg
+            , cfgFieldSettings = Control.defaultFieldSettings cfg
+            , cfgHaskellTypeSettings = Control.getHaskellType Control.defaultHaskellTypeMap
+            }
+  in cfg
 
 
 generateModule

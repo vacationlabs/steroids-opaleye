@@ -16,7 +16,6 @@ import Control.Monad.Logger (MonadLogger)
 import GHC.Stack (HasCallStack)
 import Control.Monad.IO.Class (MonadIO)
 
-type MonadConstraint m = (MonadLogger m, HasCallStack, MonadIO m)
 
 type QResult = (Oid, TableName, ColumnName, ColPosition, ColHasDefault, ColIsNullable, ColType, Maybe ColType)
 type FKResult = (ConstraintName, PKSide, FKSide)
@@ -28,7 +27,7 @@ newtype TableName = TableName Text  deriving (Eq, Show, FromField, Ord, FromJSON
 newtype ColumnName = ColumnName Text deriving (Eq, Show, FromField, Ord, FromJSONKey, ToJSONKey, ToText)
 newtype ColPosition = ColPosition Int deriving (Eq, Show, FromField, Ord)
 newtype ColHasDefault = ColHasDefault Bool deriving (Eq, Show, FromField)
-newtype ColType = ColType Text deriving (Eq, Show, FromField)
+newtype ColType = ColType Text deriving (Eq, Show, Ord, FromField)
 newtype FkOid = FkOid Oid deriving (Eq, Show)
 newtype ColIsNullable = ColIsNullable Bool deriving (Eq, Show, FromField)
 newtype RecordName = RecordName Text deriving (Eq, Show)
@@ -101,6 +100,10 @@ data GlobalConfig = GlobalConfig
   { cfgSchemas :: RE
   , cfgIncludeTables :: RE
   , cfgExcludeTables :: RE
+  , cfgRecordSettings :: TableInfo -> RecordInfo
+  , cfgFieldSettings :: TableInfo -> ColInfo -> FieldInfo
+  , cfgModuleSetings :: RecordInfo -> ModuleName
+  , cfgHaskellTypeSettings :: ColInfo -> QualifiedType
   }
 
 {-
@@ -262,3 +265,11 @@ withNoConstructors qt = ImportItem qt False
 withAllConstructors :: QualifiedType -> ImportItem
 withAllConstructors qt = ImportItem qt True
 
+
+type MonadConstraint m = (MonadLogger m, HasCallStack, MonadIO m)
+
+class HasSettings m where
+  getRecordSettings :: m (TableInfo -> RecordInfo)
+  getFieldSettings :: m (TableInfo -> ColInfo -> FieldInfo)
+  getModuleSettings :: m (RecordInfo -> ModuleName)
+  getHaskellType :: m (ColType -> QualifiedType)
