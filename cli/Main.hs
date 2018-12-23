@@ -27,6 +27,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.List as DL
 import Control.Lens
 import Text.InterpolatedString.Perl6 (qc)
+import Debug.Trace
 
 data ScriptEnv = ScriptEnv
   { fastLogger :: FLogger.FastLogger
@@ -86,14 +87,15 @@ getConnection args = PGS.connect $ PGS.ConnectInfo
 
 getGlobalConfig :: Args -> Types.GlobalConfig
 getGlobalConfig args =
-  let cfg = GlobalConfig
+  let customTypeMap = Map.fromList $ Args.typeMap args
+      cfg = GlobalConfig
             { cfgSchemas = Args.includeSchema args
             , cfgIncludeTables = Args.includeTable args
             , cfgExcludeTables = Args.excludeTable args
             , cfgRecordSettings = Control.defaultRecordSettings cfg
             , cfgModuleSetings = Control.defaultModuleSettings cfg
             , cfgFieldSettings = Control.defaultFieldSettings cfg
-            , cfgHaskellTypeSettings = Control.getHaskellType Control.defaultHaskellTypeMap
+            , cfgHaskellTypeSettings = Control.getHaskellType $ traceShowId $ customTypeMap <> Control.defaultHaskellTypeMap
             }
   in cfg
 
