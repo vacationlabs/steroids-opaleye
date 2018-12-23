@@ -1,0 +1,78 @@
+name: steroids-opaleye
+version: 0.1.1
+synopsis: A code-generator on Steroids
+description: TODO
+maintainer: Saurabh Nanda <saurabh@vacationlabs.com>
+category: Development
+ghc-options: -Wall
+
+default-extensions:
+- OverloadedStrings
+- RecordWildCards
+- DeriveGeneric
+- FlexibleInstances
+- FlexibleContexts
+- FunctionalDependencies
+- GeneralizedNewtypeDeriving
+- KindSignatures
+- MultiParamTypeClasses
+- TemplateHaskell
+- TypeFamilies
+- TypeSynonymInstances
+- QuasiQuotes
+- ScopedTypeVariables
+- LambdaCase
+- TypeApplications
+- Arrows
+- ConstraintKinds
+
+dependencies:
+  - base
+  - postgresql-simple
+  - text
+  - cases
+  - containers
+  - temporary
+  - digest
+  - directory
+  - bytestring
+  - aeson
+  - filepath
+  - regex
+  - yaml
+  - aeson-casing
+  - mtl
+  - interpolatedstring-perl6
+  - string-conv
+  - safe
+  - lens
+  - optparse-applicative
+  - optparse-generic
+  - countable-inflections
+  - vector
+  - monad-logger
+  - text-conversions
+  - hpack
+  - optparse-applicative
+  - exceptions
+  - fast-logger
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - Steroids
+    - Steroids.Types
+    - Steroids.SchemaExtractor
+    - Steroids.RecordGenerator
+    - Steroids.Control
+    - Steroids.LensClassGenerator
+    - Steroids.EnumGenerator
+    - Steroids.PrimaryKeyGenerator
+
+executables:
+  steroids-opaleye:
+    source-dirs: cli
+    main: Main.hs
+    ghc-options: -threaded -Wall -O2
+    dependencies:
+      - steroids-opaleye
