@@ -15,7 +15,30 @@ import Data.Text.Conversions
 import Control.Monad.Logger (MonadLogger)
 import GHC.Stack (HasCallStack)
 import Control.Monad.IO.Class (MonadIO)
+import Control.Lens
 
+data QualifiedType = QualifiedType
+  { qModuleName :: !Text
+  , qTypeName :: !Text
+  }
+  deriving (Eq, Show)
+
+data NewtypeInfo = NewtypeInfo
+  { newtypeName :: !QualifiedType
+  , newtypeType :: !QualifiedType
+  } deriving (Eq, Show)
+
+data PhantomTypeInfo = PhantomTypeInfo
+  { phPhantomType :: !QualifiedType
+  , phSynonym :: !QualifiedType
+  , phCoreType :: !QualifiedType
+  } deriving (Eq, Show)
+
+data PKSetting = NoNewtype
+               | SimpleNewtype NewtypeInfo
+               | PhantomNewtype PhantomTypeInfo
+               deriving (Eq, Show)
+$(makePrisms ''PKSetting)
 
 type QResult = (Oid, TableName, ColumnName, ColPosition, ColHasDefault, ColIsNullable, ColType, Maybe ColType)
 type FKResult = (ConstraintName, PKSide, FKSide)
@@ -50,7 +73,7 @@ $(deriveJSON defaultOptions ''ColIsNullable)
 
 data TableInfo = TableInfo
   { tableName :: !TableName
-  , pkInfo :: !(Maybe ColumnName)
+  , pkInfo :: ![ColumnName]
   , fkConstraints :: [(ColumnName, TableName, ColumnName)]
   , columnMap :: !(Map.Map ColumnName ColInfo)
   } deriving (Show)
@@ -58,7 +81,7 @@ data TableInfo = TableInfo
 
 data ColInfo = ColInfo
   { colName :: !ColumnName
-  , colRawPGType :: !ColType
+  , colRawPgType :: !ColType
   , colDefault :: !ColHasDefault
   , colNullable :: !ColIsNullable
   , colArray :: !ColIsArray
@@ -68,14 +91,15 @@ data ColInfo = ColInfo
 
 data FieldInfo = FieldInfo
   { fieldName :: !Text
-  , fieldPGName :: !Text
+  , fieldPgName :: !Text
   , fieldArrayDim :: !Int
   , fieldHaskellReadType :: !(ColIsNullable, QualifiedType)
   , fieldHaskellWriteType :: !(ColIsNullable, QualifiedType)
-  , fieldPGReadType :: !(ColIsNullable, QualifiedType)
-  , fieldPGWriteType :: !(ColIsNullable, ColHasDefault, QualifiedType)
+  , fieldPgReadType :: !(ColIsNullable, QualifiedType)
+  , fieldPgWriteType :: !(ColIsNullable, ColHasDefault, QualifiedType)
+  , fieldPkSetting :: !PKSetting
   } deriving (Show)
--- $(makeLensesWith camelCaseFields ''FieldInfo)
+$(makeLensesWith abbreviatedFields ''FieldInfo)
 
 data RecordInfo = RecordInfo
   { recordPolymorphicTypeName :: !Text
@@ -84,14 +108,14 @@ data RecordInfo = RecordInfo
   , recordFields :: ![FieldInfo]
   , recordHaskellReadTypeName :: !Text
   , recordHaskellWriteTypeName :: !Text
-  , recordPGReadTypeName :: !Text
-  , recordPGWriteTypeName :: !Text
-  , recordDeriving :: ![QualifiedType]
+  , recordPgReadTypeName :: !Text
+  , recordPgWriteTypeName :: !Text
+  , recordDerivedClasses :: ![QualifiedType]
   , recordOpaleyeTableName :: !Text
-  , recordPGTableName :: !Text
+  , recordPgTableName :: !Text
   , recordStrictFields :: Bool
   } deriving (Show)
--- $(makeLenses ''RecordInfo)
+$(makeLensesWith abbreviatedFields ''RecordInfo)
 
 
 type ChecksumManifest = (Map.Map FilePath Word32)
@@ -104,6 +128,7 @@ data GlobalConfig = GlobalConfig
   , cfgFieldSettings :: TableInfo -> ColInfo -> FieldInfo
   , cfgModuleSetings :: RecordInfo -> ModuleName
   , cfgHaskellTypeSettings :: ColInfo -> QualifiedType
+  , cfgPkSetting :: TableInfo -> ColInfo -> FieldInfo -> FieldInfo
   }
 
 {-
@@ -247,12 +272,6 @@ instance Monoid CodeSnippet where
     , importList = []
     , newIdentifiers = []
     }
-
-data QualifiedType = QualifiedType
-  { qModuleName :: !Text
-  , qTypeName :: !Text
-  }
-  deriving (Eq, Show)
 
 data ImportItem = ImportItem
   { importQualifiedType :: !QualifiedType

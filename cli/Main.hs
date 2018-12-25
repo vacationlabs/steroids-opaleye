@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 module Main where
 
 import Steroids.Types as Types
@@ -6,7 +7,7 @@ import Steroids.RecordGenerator as Record
 import Steroids.Control as Control
 -- import Steroids.EnumGenerator as Enum
 -- import Steroids.LensClassGenerator as Lens
--- import Steroids.PrimaryKeyGenerator as PK
+import Steroids.PrimaryKeyGenerator as PK
 -- import qualified Options.Applicative as Opts
 -- import qualified Data.Text as T
 -- import Data.Text (Text)
@@ -28,6 +29,7 @@ import qualified Data.List as DL
 import Control.Lens
 import Text.InterpolatedString.Perl6 (qc)
 import Debug.Trace
+-- import Safe (fromJustNote)
 
 data ScriptEnv = ScriptEnv
   { fastLogger :: FLogger.FastLogger
@@ -66,15 +68,24 @@ script conn cfg = do
   tableMap <- (Control.applySettings cfg) <$>
               (Schema.extractSchema conn cfg)
 
-  let tableInfos = Map.elems tableMap
+  let tableTuples = Map.elems tableMap
+      recordInfos = DL.map (^. _2) tableTuples
 
-
-  let recordModules = DL.map (^. _3) tableInfos
+  let recordModules = DL.map (^. _3) tableTuples
   Control.ensureDirectories tdir recordModules
-  modelChecksums <- foldM (generateModule tdir) Map.empty tableInfos
+  modelChecksums <- foldM (generateModule tdir) Map.empty tableTuples
 
-  let checksumManifest = Map.unions [modelChecksums]
+  let (pkNewtypes, pkPhantoms) = PK.extractPkSettings recordInfos
+      pkModules = (DL.map (ModuleName . Types.qModuleName . Types.newtypeName) pkNewtypes) ++
+                  (DL.map (ModuleName . Types.qModuleName . Types.phSynonym) pkPhantoms)
+  when (not $ DL.null pkNewtypes)
+    (Prelude.error $ "Only phantom-types support for primary keys")
+  Control.ensureDirectories tdir pkModules
+  pkChecksum <- foldM (generatePhantomPrimaryKey tdir) Map.empty pkPhantoms
+
+  let checksumManifest = Map.unions [modelChecksums, pkChecksum]
   Control.copyNewFiles tdir outdir checksumManifest
+
 
 getConnection :: (HasCallStack) => Args -> IO PGS.Connection
 getConnection args = PGS.connect $ PGS.ConnectInfo
@@ -95,7 +106,11 @@ getGlobalConfig args =
             , cfgRecordSettings = Control.defaultRecordSettings cfg
             , cfgModuleSetings = Control.defaultModuleSettings cfg
             , cfgFieldSettings = Control.defaultFieldSettings cfg
-            , cfgHaskellTypeSettings = Control.getHaskellType $ traceShowId $ customTypeMap <> Control.defaultHaskellTypeMap
+            , cfgHaskellTypeSettings = Control.getHaskellType $ customTypeMap <> Control.defaultHaskellTypeMap
+            , cfgPkSetting = case Args.newtypes args of
+                Args.NTNone -> Control.defaultNoNewtypeSetting
+                Args.NTPrimaryKeys -> Control.defaultPhantomNewtypeSetting cfg
+                Args.NTBoth -> Prelude.error "PK + FK not implemented"
             }
   in cfg
 
@@ -115,14 +130,31 @@ generateModule tdir checksumManifest (_, rinfo@RecordInfo{..}, mname) = do
       <> (Record.generateRecord rinfo)
       <> (Record.generateConcreteRecordType rinfo (withHaskellWrappers fieldHaskellReadType) recordHaskellReadTypeName)
       <> (Record.generateConcreteRecordType rinfo (withHaskellWrappers fieldHaskellWriteType) recordHaskellWriteTypeName)
-      <> (Record.generateConcreteRecordType rinfo withPGReadWrappers recordPGReadTypeName)
-      <> (Record.generateConcreteRecordType rinfo withPGWriteWrappers recordPGWriteTypeName)
+      <> (Record.generateConcreteRecordType rinfo withPgReadWrappers recordPgReadTypeName)
+      <> (Record.generateConcreteRecordType rinfo withPgWriteWrappers recordPgWriteTypeName)
       <> (Record.generateOpaleyeTable rinfo)
       <> (Record.generateProductProfunctor rinfo)
       -- <> (LGen.generateLenses rinfo)
-    contents = ([qc|{generateModuleHeader mname importList newIdentifiers}
+    contents = ([qc|{Control.generateModuleHeader mname importList newIdentifiers}
 
 \{-# ANN module ("HLint: ignore Avoid lambda" :: Prelude.String) #-}
+
+{codeSnippet}
+|])
+
+generatePhantomPrimaryKey
+  :: (MonadConstraint m)
+  => FilePath
+  -> ChecksumManifest
+  -> PhantomTypeInfo
+  -> m (ChecksumManifest)
+generatePhantomPrimaryKey tdir checksumManifest phInfo = do
+  (relativePath, checksum) <- Control.writeModule tdir mname contents
+  pure $ Map.insert relativePath checksum checksumManifest
+  where
+    mname = ModuleName $ qModuleName $ phSynonym phInfo
+    CodeSnippet{..} = PK.generatePhantom phInfo
+    contents = ([qc|{Control.generateModuleHeader mname importList newIdentifiers}
 
 {codeSnippet}
 |])

@@ -1,4 +1,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 module Steroids.Control where
 
 import Steroids.Types as Types
@@ -23,6 +25,7 @@ import Text.Countable (singularize)
 import System.IO as SIO
 import Safe (fromJustNote)
 import Control.Lens
+import Data.Text.Conversions (toText)
 
 -- applyRecordSettings
 --   :: (HasCallStack)
@@ -33,6 +36,32 @@ import Control.Lens
 --   -> [Types.RecordInfo]
 -- applyRecordSettings rsettings fsettings msettings tinfos  =
 --   DL.map recordSettingFn tinfos
+
+-- applyPkSettings
+--   :: ( HasCallStack )
+--   => GlobalConfig
+--   -> [(Types.TableInfo, Types.RecordInfo, Types.ModuleName)]
+--   -> [(Types.TableInfo, Types.RecordInfo, Types.ModuleName, [Types.PKSetting])]
+-- applyPkSettings cfg tableTuples =
+--   (flip DL.map) tableTuples $ \ (tinfo@TableInfo{pkInfo}, rinfo, mname) ->
+--   let (pkSettings, newRecordFields) = DL.foldl' (applyPkSetting tinfo rinfo) ([], (recordFields rinfo)) pkInfo
+--   in ( tinfo
+--      , rinfo { recordFields = newRecordFields }
+--      , mname
+--      , pkSettings )
+
+--   where
+--     applyPkSetting :: TableInfo -> RecordInfo -> ([Types.PKSetting], [FieldInfo]) -> ColumnName -> ([Types.PKSetting], [FieldInfo])
+--     applyPkSetting tinfo rinfo (pkSettings, finfos) pkColName =
+--       let pkFieldIdx = fromJustNote ([qc|Unable to find column name {pkColName} in: {finfos}|]) $
+--                        DL.findIndex ((== (toText pkColName)) . fieldPgName) finfos
+--           pkFieldInfo = finfos DL.!! pkFieldIdx
+--           pkColInfo = fromJustNote ([qc|Unable to find column name {pkColName} in: {tinfo}|]) $
+--                       Map.lookup pkColName (columnMap tinfo)
+--           (a, _:b) = DL.splitAt pkFieldIdx finfos
+--           (pkSetting, newfinfo) = (cfgPkSetting cfg) (tinfo, pkColInfo, rinfo, pkFieldInfo)
+--       in ( pkSetting:pkSettings
+--          , a ++ (newfinfo:b) )
 
 applySettings
   :: (HasCallStack)
@@ -59,14 +88,14 @@ defaultRecordSettings GlobalConfig{cfgFieldSettings} tinfo@TableInfo{..} = Types
       Map.elems columnMap
   , recordHaskellReadTypeName = cname
   , recordHaskellWriteTypeName = T.append cname "W"
-  , recordPGReadTypeName = T.append cname "PGR"
-  , recordPGWriteTypeName = T.append cname "PGW"
-  , recordDeriving =
+  , recordPgReadTypeName = T.append cname "PGR"
+  , recordPgWriteTypeName = T.append cname "PGW"
+  , recordDerivedClasses =
     [ QualifiedType "Prelude" "Eq"
     , QualifiedType "Prelude" "Show"
     ]
   , recordOpaleyeTableName = T.append "tableFor" (singularize $ pascalize tname)
-  , recordPGTableName = tname
+  , recordPgTableName = tname
   , recordStrictFields = True
   }
   where
@@ -79,21 +108,59 @@ defaultFieldSettings
   -> TableInfo
   -> ColInfo
   -> FieldInfo
-defaultFieldSettings GlobalConfig{cfgHaskellTypeSettings} TableInfo{..} cinfo@ColInfo{..} = FieldInfo
-  { fieldName = camelize cname
-  , fieldPGName = cname
-  , fieldArrayDim = case colArray of
-      ColIsArray False -> 0
-      ColIsArray True -> colArrayDim
-  , fieldHaskellReadType = (colNullable, cfgHaskellTypeSettings cinfo)
-  , fieldHaskellWriteType = (colNullable, cfgHaskellTypeSettings cinfo)
-  , fieldPGReadType = (colNullable, getDefaultPGType cinfo)
-  , fieldPGWriteType = case (colNullable, colDefault) of
-      (ColIsNullable True, ColHasDefault True) -> (ColIsNullable True, ColHasDefault False, getDefaultPGType cinfo)
-      _ -> (colNullable, colDefault, getDefaultPGType cinfo)
-  }
+defaultFieldSettings GlobalConfig{cfgHaskellTypeSettings, cfgPkSetting} tinfo@TableInfo{..} cinfo@ColInfo{..} =
+  let finfo = FieldInfo
+              { fieldName = camelize cname
+              , fieldPgName = cname
+              , fieldArrayDim = case colArray of
+                  ColIsArray False -> 0
+                  ColIsArray True -> colArrayDim
+              , fieldHaskellReadType = (colNullable, cfgHaskellTypeSettings cinfo)
+              , fieldHaskellWriteType = (colNullable, cfgHaskellTypeSettings cinfo)
+              , fieldPgReadType = (colNullable, getDefaultPgType cinfo)
+              , fieldPgWriteType = case (colNullable, colDefault) of
+                  (ColIsNullable True, ColHasDefault True) -> (ColIsNullable True, ColHasDefault False, getDefaultPgType cinfo)
+                  _ -> (colNullable, colDefault, getDefaultPgType cinfo)
+              , fieldPkSetting = NoNewtype
+              }
+      finalfinfo = case DL.elem colName pkInfo of
+                     False -> finfo
+                     True -> cfgPkSetting tinfo cinfo finfo
+  in finalfinfo
   where
     (ColumnName cname) = colName
+
+defaultNoNewtypeSetting
+  :: TableInfo
+  -> ColInfo
+  -> FieldInfo
+  -> FieldInfo
+defaultNoNewtypeSetting _ _ finfo = finfo
+
+defaultPhantomNewtypeSetting
+  :: GlobalConfig
+  -> TableInfo
+  -> ColInfo
+  -> FieldInfo
+  -> FieldInfo
+defaultPhantomNewtypeSetting _ TableInfo{tableName} ColInfo{colName} finfo@FieldInfo{fieldHaskellReadType=(_, ftype)} = newfinfo
+  where
+    pkStg = PhantomNewtype $ PhantomTypeInfo
+      { phPhantomType = QualifiedType "Foundation.Types.PrimaryKey" "PK"
+      , phSynonym = psyn
+      , phCoreType = ftype
+      }
+    newfinfo = finfo
+               & haskellReadType._2 .~ psyn
+               & haskellWriteType._2 .~ psyn
+               & pgReadType._2 .~ psyn
+               & pgWriteType._3 .~ psyn
+               & pkSetting .~ pkStg
+    psyn = QualifiedType mname pkName
+    mname = ([qc|AutoGenerated.PrimaryKeys.{pkName}|])
+    pkName = pascalize (singularize $ toText tableName) <>
+             pascalize (toText colName)
+
 
 defaultModuleSettings
   :: (HasCallStack)
@@ -131,15 +198,15 @@ getHaskellType
   => Map.Map ColType QualifiedType
   -> ColInfo
   -> QualifiedType
-getHaskellType tyMap cinfo@ColInfo{colRawPGType} =
-  fromJustNote ([qc|Unhandled PG Type found in {cinfo} ==> {colRawPGType}|]) $
-  Map.lookup colRawPGType tyMap
+getHaskellType tyMap cinfo@ColInfo{colRawPgType} =
+  fromJustNote ([qc|Unhandled PG Type found in {cinfo} ==> {colRawPgType}|]) $
+  Map.lookup colRawPgType tyMap
 
-getDefaultPGType
+getDefaultPgType
   :: (HasCallStack)
   => Types.ColInfo
   -> QualifiedType
-getDefaultPGType Types.ColInfo{colRawPGType=(ColType ctype)} = case ctype of
+getDefaultPgType Types.ColInfo{colRawPgType=(ColType ctype)} = case ctype of
   "varchar" -> QualifiedType "Opaleye" "PGText"
   "hstore" -> QualifiedType "Opaleye.TH" "PGHStore"
   y -> QualifiedType "Opaleye" (T.append "PG" (capitalizeFirstChar y))
@@ -229,3 +296,52 @@ copyNewFiles tdir autogenDir newManifest = do
         )
         Map.empty
         dirList
+
+
+
+generateModuleHeader
+  ::(HasCallStack)
+  => ModuleName
+  -> [ImportItem]
+  -> [Text]
+  -> Text
+generateModuleHeader (ModuleName mname) ilist elist = ([qc|\{-# LANGUAGE TemplateHaskell, DeriveGeneric, MultiParamTypeClasses, FunctionalDependencies, DeriveAnyClass #-}
+\{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
+\{-# OPTIONS_GHC -fno-warn-dodgy-imports #-}
+module {moduleNameWithExportList} where
+{T.unlines uniqueImportList :: Text}
+|])
+  where
+    moduleNameWithExportList = case elist of
+                                 [] -> mname
+                                 items -> ([qc|{mname} ({T.intercalate ", " $ DL.nub items})|])
+    importMap :: Map.Map Text (Map.Map Text Bool) =
+      DL.foldl'
+      (
+        \memo ImportItem{..} ->
+          let QualifiedType{..} = importQualifiedType
+          in Map.insertWith
+             (
+               \_ constrMap2 ->
+                 Map.insertWith (||) qTypeName importConstructors constrMap2
+             )
+             qModuleName
+             (Map.singleton qTypeName importConstructors)
+             memo
+      )
+      Map.empty
+      ilist
+
+
+    importItemWithConstructors constrMap =
+      DL.map
+      (
+        \(tyName, includeConstructors) -> case includeConstructors of
+          False -> tyName
+          True -> ([qc|{tyName}(..)|])
+      )
+      (Map.toList constrMap)
+
+    uniqueImportList :: [Text] =
+      DL.map (\(mname_, constrMap) -> ([qc|import {mname_} ({T.intercalate ", " $ importItemWithConstructors constrMap})|])) $
+      Map.toList importMap

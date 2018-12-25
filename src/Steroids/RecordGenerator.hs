@@ -61,11 +61,11 @@ typeVariableNames finfos mSuffix = case mSuffix of
 generateRecord :: RecordInfo -> CodeSnippet
 generateRecord  rinfo@RecordInfo{..} = CodeSnippet
   { codeSnippet = snippet
-  , importList = withNoConstructors <$> recordDeriving
+  , importList = withNoConstructors <$> recordDerivedClasses
   , newIdentifiers = [recordPolymorphicTypeName <> "(..)"]
   }
   where
-    derivingTemplate = T.intercalate ", " $ DL.map qualifiedName recordDeriving
+    derivingTemplate = T.intercalate ", " $ DL.map qualifiedName recordDerivedClasses
     fieldTemplate =
       T.intercalate ", " $
       (flip DL.map) recordFields $ \finfo ->
@@ -92,12 +92,12 @@ withHaskellWrappers accessorFn finfo@FieldInfo{..} = CodeSnippet
                          else t
     nullableWrapper (t :: Text) = if colNullable then ([qc|(Prelude.Maybe {t})|])  else t
 
-withPGWrappersInternal
+withPgWrappersInternal
   :: (HasCallStack)
   => (FieldInfo -> (ColIsNullable, ColHasDefault, QualifiedType))
   -> FieldInfo
   -> CodeSnippet
-withPGWrappersInternal accessorFn finfo@FieldInfo{..} = CodeSnippet
+withPgWrappersInternal accessorFn finfo@FieldInfo{..} = CodeSnippet
   { codeSnippet = (defaultWrapper . columnWrapper . nullableWrapper . (arrayWrapper fieldArrayDim)) (T.concat ["(" , qualifiedName qname, ")"])
   , importList = [ withNoConstructors qname
                  , withNoConstructors $ QualifiedType "Opaleye" "Column"
@@ -113,18 +113,18 @@ withPGWrappersInternal accessorFn finfo@FieldInfo{..} = CodeSnippet
     columnWrapper (t :: Text) = ([qc|(Opaleye.Column {t})|])
     defaultWrapper (t :: Text) = if hasDefault then ([qc|(Prelude.Maybe {t})|]) else t
 
-withPGReadWrappers
+withPgReadWrappers
   :: (HasCallStack)
   => FieldInfo
   -> CodeSnippet
-withPGReadWrappers finfo@FieldInfo{fieldPGReadType=(isNullable, qname)} =
-  withPGWrappersInternal (const (isNullable, ColHasDefault False, qname)) finfo
+withPgReadWrappers finfo@FieldInfo{fieldPgReadType=(isNullable, qname)} =
+  withPgWrappersInternal (const (isNullable, ColHasDefault False, qname)) finfo
 
-withPGWriteWrappers
+withPgWriteWrappers
   :: (HasCallStack)
   => FieldInfo
   -> CodeSnippet
-withPGWriteWrappers finfo = withPGWrappersInternal fieldPGWriteType finfo
+withPgWriteWrappers finfo = withPgWrappersInternal fieldPgWriteType finfo
 
 generateConcreteRecordType
   :: (HasCallStack)
@@ -171,15 +171,15 @@ generateOpaleyeTable rinfo@RecordInfo{..} = CodeSnippet
     requiredTy = QualifiedType "Opaleye" "required"
     tableLMaps = DL.map fieldLMap recordFields
     fieldLMap finfo@FieldInfo{..} =
-      let (ColIsNullable _, ColHasDefault hasDefault, _) = fieldPGWriteType
+      let (ColIsNullable _, ColHasDefault hasDefault, _) = fieldPgWriteType
       in T.intercalate " " [ qualifiedName lmapTy
                            , prefixedFieldName rinfo finfo
                            , if hasDefault
-                             then ([qc|({qualifiedName optionalTy} "{fieldPGName}")|])
-                             else ([qc|({qualifiedName requiredTy} "{fieldPGName}")|])]
+                             then ([qc|({qualifiedName optionalTy} "{fieldPgName}")|])
+                             else ([qc|({qualifiedName requiredTy} "{fieldPgName}")|])]
     snippet = ([qc|
-{recordOpaleyeTableName} :: {qualifiedName tableTy} {recordPGWriteTypeName} {recordPGReadTypeName}
-{recordOpaleyeTableName} = {qualifiedName tableTy} "{recordPGTableName}" ({recordConstructurName} Prelude.<$> {T.intercalate " Prelude.<*> " tableLMaps})
+{recordOpaleyeTableName} :: {qualifiedName tableTy} {recordPgWriteTypeName} {recordPgReadTypeName}
+{recordOpaleyeTableName} = {qualifiedName tableTy} "{recordPgTableName}" ({recordConstructurName} Prelude.<$> {T.intercalate " Prelude.<*> " tableLMaps})
 |])
 
 generateProductProfunctor :: RecordInfo -> CodeSnippet

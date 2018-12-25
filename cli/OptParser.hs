@@ -13,6 +13,11 @@ import qualified Steroids.Types as Types
 import Data.String.Conv (toS)
 -- import qualified Data.List as DL
 
+data NewtypeSetting = NTNone
+                    | NTPrimaryKeys
+                    | NTBoth
+                    deriving (Eq, Show)
+
 data Args = Args
   { pgUser :: !String
   , pgPassword :: !String
@@ -24,6 +29,7 @@ data Args = Args
   , excludeTable :: !RE.RE
   , outputDir :: !FilePath
   , typeMap :: ![(Types.ColType, Types.QualifiedType)]
+  , newtypes :: !NewtypeSetting
   }
 
 parserPrefs :: ParserPrefs
@@ -56,6 +62,7 @@ argParser = Args
   <*> excludeTableParser
   <*> outputDirParser
   <*> typeMapParser
+  <*> newtypeParser
   where
     -- regexReadM :: (String -> Either String RE.RE) -> Opts.ReadM RE.RE
     regexReadM = eitherReader RE.compileRegex
@@ -113,9 +120,28 @@ argParser = Args
 
     typeMapParser = many $ option (eitherReader decodeTypeMap) $
       long "type-mapping" <>
-      metavar "PgType,FullyQualifiedHaskellType" <>
+      metavar "PG_TYPE,FULLY_QUALIFIED_HASKELL_TYPE" <>
       help "Modify the default DB<>Haskell type-mappings. Use this to either override an existing mapping, or add new mappings."
 
+    newtypeParser = option (eitherReader decodeNewtypeSetting) $
+      long "newtype-setting" <>
+      metavar "none,pk,both" <>
+      help "'pk' = generate newtypes for primary-keys (eg. newtype UserId = UserId Int). 'both' = use the newtypes for foreign key references." <>
+      value NTNone <>
+      showDefaultWith displayNewtypeSetting
+
+decodeNewtypeSetting :: String -> Either String NewtypeSetting
+decodeNewtypeSetting x = case x of
+  "none" -> Right NTNone
+  "pk" -> Right NTPrimaryKeys
+  "both" -> Right NTBoth
+  _  -> Left $ "Unknown newtype setting: " <> show x
+
+displayNewtypeSetting :: NewtypeSetting -> String
+displayNewtypeSetting x = case x of
+  NTNone -> "none"
+  NTPrimaryKeys -> "pk"
+  NTBoth -> "both"
 
 decodeTypeMap :: String -> Either String (Types.ColType, Types.QualifiedType)
 decodeTypeMap x =
@@ -123,6 +149,6 @@ decodeTypeMap x =
   in case T.splitOn "," xt of
     [ctype, htype] -> case T.breakOnEnd "." htype of
       ("", _) -> Left $ "Please specify fully-qualified name for for the Haskelly type in: " <> x
-      (a, b) -> Right $ ( Types.ColType ctype -- remove the trailing '.'
-                        , Types.QualifiedType (T.dropEnd 1  a) b )
+      (a, b) -> Right ( Types.ColType ctype
+                      , Types.QualifiedType (T.dropEnd 1  a) b ) -- remove the trailing '.'
     _ -> Left $ "Please specify type-mappings in the correct format: " <> x

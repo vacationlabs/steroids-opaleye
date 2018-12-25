@@ -91,8 +91,7 @@ steroids-opaleye
   --pg-db
   --pg-password
   --output-dir
-  --pk-newtypes
-  --fk-newtypes
+  --newtype-setting=both
 @
 
 == Generating sum-types for @ENUM@s

@@ -17,6 +17,7 @@ import Data.List as DL
 import Database.PostgreSQL.Simple.Types(PGArray(..))
 import Data.Map.Strict as Map
 import Control.Lens
+import Debug.Trace
 
 extractSchema
   :: MonadConstraint m
@@ -25,8 +26,8 @@ extractSchema
   -> m (Map.Map Types.TableName Types.TableInfo)
 extractSchema conn cfg = do
   qresults <- fetchAllColumns conn cfg
-  fkConstraints <- fetchAllFkConstraints conn cfg
-  pure $ generateTableInfoMap qresults fkConstraints
+  (pkConstraints, fkConstraints) <- fetchAllConstraints conn cfg
+  pure $ generateTableInfoMap qresults pkConstraints fkConstraints
 
 
 fetchAllColumns
@@ -78,12 +79,12 @@ WHERE
 ORDER BY t.tablename, c.attnum
 |])
 
-fetchAllFkConstraints
+fetchAllConstraints
   :: (MonadLogger m, HasCallStack, MonadIO m)
   => Connection
   -> Types.GlobalConfig
-  -> m [Types.FKResult]
-fetchAllFkConstraints conn cfg = do
+  -> m ([Types.PKSide], [Types.FKResult])
+fetchAllConstraints conn cfg = do
   let includedTables_ = reSource $ Types.cfgIncludeTables cfg
       excludedTables_ = reSource $ Types.cfgExcludeTables cfg
       schemas_ = reSource $ Types.cfgSchemas cfg
@@ -91,10 +92,19 @@ fetchAllFkConstraints conn cfg = do
   q <- liftIO (formatQuery conn fkQuery queryParams)
   logDebugNS "Steroids.Opaleye.SchemaExtractor" (toS q)
   rows <- liftIO $ query conn fkQuery queryParams
-  pure $ DL.map (\(conname, pkTable, pkKeys, fkTable, fkKeys) -> (conname, (pkTable, fromPGArray pkKeys), (fkTable, fromPGArray fkKeys))) rows
+  pure $ (flip . flip DL.foldl') ([], []) rows $  \ (pks, fks) (conname, pkTable, pkKeys, mFkTable, mFkKeys) ->
+    let pkSide = (pkTable, fromPGArray pkKeys)
+    in case (mFkTable, mFkKeys) of
+         (Nothing, Nothing) -> ( pkSide:pks, fks )
+         (Just fkTable, Just fkKeys) ->
+           let fkSide = ( conname
+                        , pkSide
+                        , (fkTable, fromPGArray fkKeys)
+                        )
+           in ( pks, fkSide:fks )
+         x -> Prelude.error $ "Something is wrong. (mFkTable, mFkKeys) should either both be NULL, or NOT NULL. Found: " <> show x
 
 
--- TODO: Apply schema filter
 fkQuery :: Query
 fkQuery = ([qc|
 SELECT
@@ -105,29 +115,31 @@ SELECT
   x.confkey
 FROM pg_catalog.pg_constraint x
 INNER JOIN pg_catalog.pg_class pk_table ON x.conrelid=pk_table.oid
-INNER JOIN pg_catalog.pg_class fk_table ON x.confrelid=fk_table.oid
 INNER JOIN pg_catalog.pg_namespace pgn ON x.connamespace = pgn.oid
+LEFT JOIN pg_catalog.pg_class fk_table ON x.confrelid=fk_table.oid
 WHERE
-  x.contype='f'
+  x.contype IN ('f', 'p')
   AND (pgn.nspname ~ ?)
   AND (pk_table.relname ~ ?)
   AND (NOT pk_table.relname ~ ?)
-  AND (fk_table.relname ~ ?)
-  AND (NOT fk_table.relname ~ ?)
+  AND (fk_table.relname IS NULL OR
+    ((fk_table.relname ~ ?) AND (NOT fk_table.relname ~ ?))
+  )
 |])
 
 
 
-generateTableInfoMap :: [Types.QResult] -> [Types.FKResult] -> Map.Map Types.TableName Types.TableInfo
-generateTableInfoMap qresults fks =
+generateTableInfoMap :: [Types.QResult] -> [Types.PKSide] -> [Types.FKResult] -> Map.Map Types.TableName Types.TableInfo
+generateTableInfoMap qresults pks fks =
   let (qrIMap :: Map.Map Types.TableName [Types.QResult]) = Types.createMapBy (view _2) qresults
+      (pkIMap :: Map.Map Types.TableName [Types.ColPosition]) = Map.fromList pks
       (fkIMap :: Map.Map Types.TableName [Types.FKResult]) = Types.createMapBy (view (_2._1)) fks
       (colIMap :: Map.Map Types.TableName (Map.Map Types.ColPosition Types.ColumnName)) =
         Map.map Map.fromList $
         Map.map (\qrs -> DL.map (\(_, _, cname, cpos, _, _, _, _) -> (cpos, cname)) qrs)  qrIMap
 
-      getColName :: (Types.TableName, Types.ColPosition) -> Types.ColumnName
-      getColName arg@(tname, colpos) = fromJustNote ([qc|Could not find column for {arg}|]) (Map.lookup colpos $ Map.findWithDefault (Map.empty) tname colIMap)
+      getColName :: Types.TableName -> Types.ColPosition -> Types.ColumnName
+      getColName tname colpos = fromJustNote ([qc|Could not find column at position {colpos}: {tname}|]) (Map.lookup colpos $ Map.findWithDefault (Map.empty) tname colIMap)
 
 
 
@@ -138,22 +150,22 @@ generateTableInfoMap qresults fks =
       createFkConstraints tname = DL.concatMap
                                  (\(_, (pkTable, pkPositions), (fkTable, fkPositions)) ->
                                     DL.zipWith (\pkPos fkPos ->
-                                                  (getColName (pkTable, pkPos), fkTable, getColName (fkTable, fkPos))) pkPositions fkPositions)
+                                                  (getColName pkTable pkPos, fkTable, getColName fkTable fkPos)) pkPositions fkPositions)
                                  (Map.findWithDefault [] tname fkIMap)
 
       finalMap = (flip Map.mapWithKey) qrIMap $ \tname qrs ->
-        TableInfo
-        { tableName = tname
-        -- TODO: we should be looking at the col metadata to figure out whether it's a PK?
-        , pkInfo = fmap (view _3) (DL.find (\qr -> qr ^. _3 == (Types.ColumnName "id")) qrs)
-        -- NOTE: We are keeping only those FK constraints that reference
-        -- the PK of the foreign table. If we don't apply this restriction,
-        -- then we will need to make a dependency graph of all tables and
-        -- do a lot of code-gen while traversing that graph, in a very
-        -- specific order.
-        , fkConstraints = DL.filter (\(_, _, fkColName) -> fkColName == (Types.ColumnName "id")) (createFkConstraints tname)
-        , columnMap = (Map.fromList $ DL.map qresultToColInfo qrs)
-        }
+        let cmap = Map.fromList $ DL.map qresultToColInfo qrs
+        in TableInfo
+           { tableName = tname
+           , pkInfo = maybe [] (DL.map (getColName tname)) (Map.lookup tname pkIMap)
+           -- NOTE: We are keeping only those FK constraints that reference
+           -- the PK of the foreign table. If we don't apply this restriction,
+           -- then we will need to make a dependency graph of all tables and
+           -- do a lot of code-gen while traversing that graph, in a very
+           -- specific order.
+           , fkConstraints = DL.filter (\(_, _, fkColName) -> fkColName == (Types.ColumnName "id")) (createFkConstraints tname)
+           , columnMap = cmap
+           }
 
   in finalMap
   where
@@ -161,7 +173,7 @@ generateTableInfoMap qresults fks =
       (cname, ColInfo
               {
                 colName = cname
-              , colRawPGType = fromMaybe ctype cArrayType
+              , colRawPgType = fromMaybe ctype cArrayType
               , colDefault = hasdef
               , colNullable = nullable
               , colPosition = colpos
